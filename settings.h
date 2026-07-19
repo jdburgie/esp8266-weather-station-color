@@ -16,20 +16,25 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 See more at http://blog.squix.ch
+
+Converted from Wunderground to OpenWeatherMap while keeping cxandy's
+config portal + touch calibration + AZSMZ hardware support.
 */
 
 #include <simpleDSTadjust.h>
 
-// Config mode SSID
-const String CONFIG_SSID = "@AZSMZ_TFT";
+// Config mode SSID (an ESP chip id is prepended to make it unique)
+const String CONFIG_SSID = "-WeatherStation";
 
-// Setup
+// Setup - these are defaults; the config portal (SPIFFS) overrides them.
+// Leave as placeholders: on first boot with no saved config the device can't
+// join WiFi and automatically opens the setup portal (AP "<chipid>-WeatherStation").
 String WIFI_SSID = "yourssid";
 String WIFI_PASS = "yourpassw0rd";
 
 int UPDATE_INTERVAL_SECS = 10 * 60; // Update every 10 minutes
-int SAVER_INTERVAL_SECS = 20;   // Going to screen saver after idle times, set 0 for dont screen saver.
-int SLEEP_INTERVAL_SECS = 30;   // Going to Sleep after idle times, set 0 for dont sleep.
+int SAVER_INTERVAL_SECS = 0;    // Going to screen saver after idle times, set 0 for dont screen saver.
+int SLEEP_INTERVAL_SECS = 0;    // Going to Sleep after idle times, set 0 for dont sleep.
 
 #define SQUIX         10
 #define AZSMZ_1_1     11
@@ -44,11 +49,11 @@ int SLEEP_INTERVAL_SECS = 30;   // Going to Sleep after idle times, set 0 for do
   #define TFT_DC D2
   #define TFT_CS D1
   #define TFT_LED D8
-  
+
   #define HAVE_TOUCHPAD
   #define TOUCH_CS D3
   #define TOUCH_IRQ  D4
-    
+
 #elif BOARD == AZSMZ_1_1
   #define TFT_DC 5
   #define TFT_CS 4
@@ -59,9 +64,9 @@ int SLEEP_INTERVAL_SECS = 30;   // Going to Sleep after idle times, set 0 for do
 
   #define LM75
   #define SDA_PIN 0
-  #define SCL_PIN 2  
+  #define SCL_PIN 2
   // LM75A Address
-  #define Addr 0x48  
+  #define Addr 0x48
   #define BATT
 
 #elif BOARD == AZSMZ_1_6
@@ -79,40 +84,36 @@ int SLEEP_INTERVAL_SECS = 30;   // Going to Sleep after idle times, set 0 for do
   #define NTC
   #define nominalResistance 10   // NTC 10K
   #define bCoefficient 3950      // B 3950
-  #define TEMPERATURENOMINAL 25  
+  #define TEMPERATURENOMINAL 25
   #define serialResistance 10
-  
+
 #endif
 
-// Wunderground Settings
-// To check your settings first try them out in your browser:
-// http://api.wunderground.com/api/WUNDERGROUND_API_KEY/conditions/q/WUNDERGROUND_COUNTTRY/WUNDERGROUND_CITY.json
-// e.g. http://api.wunderground.com/api/808b********4511/conditions/q/CH/Zurich.json
-// e.g. http://api.wunderground.com/api/808b********4511/conditions/q/CA/SAN_FRANCISCO.json <- note that in the US you use the state instead of country code
+// OpenWeatherMap Settings
+// Sign up here to get an API key: https://docs.thingpulse.com/how-tos/openweathermap-key/
+String OPEN_WEATHER_MAP_API_KEY = "";   // set via the config portal, or paste your key here for a personal build
 
-String DISPLAYED_CITY_NAME = "Zürich";
-String WUNDERGRROUND_API_KEY = "WUNDERGROUND_KEY";
-String WUNDERGRROUND_LANGUAGE = "EN";
-String WUNDERGROUND_COUNTRY = "CH";
-String WUNDERGROUND_CITY = "Zurich";
+// Go to https://openweathermap.org/find?q= and search for a location. The number
+// at the end of the resulting URL (e.g. .../city/5577592) is the location id.
+String OPEN_WEATHER_MAP_LOCATION_ID = "5577592";   // Greeley, CO
+String DISPLAYED_CITY_NAME = "Greeley";
 
-#define UTC_OFFSET + 1
-struct dstRule StartRule = {"CEST", Last, Sun, Mar, 2, 3600}; // Central European Summer Time = UTC/GMT +2 hours
-struct dstRule EndRule = {"CET", Last, Sun, Oct, 2, 0};       // Central European Time = UTC/GMT +1 hour
+// Arabic -> ar, Bulgarian -> bg, Catalan -> ca, Czech -> cz, German -> de, Greek -> el,
+// English -> en, Persian (Farsi) -> fa, Finnish -> fi, French -> fr, ... Spanish -> es
+String OPEN_WEATHER_MAP_LANGUAGE = "en";
 
-// Settings for Boston
-// #define UTC_OFFSET -5
-// struct dstRule StartRule = {"EDT", Second, Sun, Mar, 2, 3600}; // Eastern Daylight time = UTC/GMT -4 hours
-// struct dstRule EndRule = {"EST", First, Sun, Nov, 1, 0};       // Eastern Standard time = UTC/GMT -5 hour
+// -7 = US Mountain Standard Time. simpleDSTadjust applies the DST rules below on top.
+#define UTC_OFFSET -7
+struct dstRule StartRule = {"MDT", Second, Sun, Mar, 2, 3600}; // Mountain Daylight Time = UTC/GMT -6 hours
+struct dstRule EndRule = {"MST", First, Sun, Nov, 2, 0};       // Mountain Standard Time = UTC/GMT -7 hours
 
 // values in metric or imperial system?
-bool IS_METRIC = true;
+bool IS_METRIC = false;
 
 // Change for 12 Hour/ 24 hour style clock
-bool IS_STYLE_12HR = false;
+bool IS_STYLE_12HR = true;
 
 // change for different ntp (time servers)
-//#define NTP_SERVERS "0.ch.pool.ntp.org", "1.ch.pool.ntp.org", "2.ch.pool.ntp.org"
 #define NTP_SERVERS "us.pool.ntp.org", "time.nist.gov", "pool.ntp.org"
 
 /***************************

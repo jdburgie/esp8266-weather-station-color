@@ -97,9 +97,9 @@ int readNTC() {
  ***/
 
 #include <JsonListener.h>
-#include <WundergroundConditions.h>
-#include <WundergroundForecast.h>
-#include <WundergroundAstronomy.h>
+#include <OpenWeatherMapCurrent.h>
+#include <OpenWeatherMapForecast.h>
+#include <SunMoonCalc.h>
 #include <MiniGrafx.h>
 #include <Carousel.h>
 #include <ILI9341_SPI.h>
@@ -167,9 +167,15 @@ Carousel carousel(&gfx, 0, 0, 240, 100);
 
 #endif 
 
-WGConditions conditions;
-WGForecast forecasts[MAX_FORECASTS];
-WGAstronomy astronomy;
+OpenWeatherMapCurrentData currentWeather;
+OpenWeatherMapForecastData forecasts[MAX_FORECASTS];
+SunMoonCalc::Moon moonData;
+
+const String WDAY_NAMES[] = {"SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"};
+
+String getTime(time_t *timestamp);
+String owmToCxandyIcon(String owmIcon);
+char determineMoonIcon();
 
 // Setup simpleDSTadjust Library rules
 simpleDSTadjust dstAdjusted(StartRule, EndRule);
@@ -520,8 +526,7 @@ void loop() {
       temperature = readNTC()/10.0;
     #endif 
     if (btnLongClick) {
-//      touchCalibration();   
-      startConfig();          
+      touchCalibration();   // long-press = recalibrate touch screen
       btnLongClick = false;
     }
 
@@ -604,24 +609,49 @@ void updateData() {
   drawProgress(10, "Updating time...");
   configTime(UTC_OFFSET * 3600, 0, NTP_SERVERS);
 
+  // DNS warm-up + settle: the first TCP/DNS attempt right after a fresh WiFi
+  // connect often fails ("failed to connect to host"). Resolve the API host
+  // (with retries) so the connection is ready before the weather fetch.
+  Serial.printf("NET ip=%s gw=%s dns0=%s dns1=%s\n",
+                WiFi.localIP().toString().c_str(),
+                WiFi.gatewayIP().toString().c_str(),
+                WiFi.dnsIP(0).toString().c_str(),
+                WiFi.dnsIP(1).toString().c_str());
+  IPAddress owmIp;
+  for (int r = 0; r < 8; r++) {
+    if (WiFi.hostByName("api.openweathermap.org", owmIp) && owmIp != INADDR_NONE && (uint32_t)owmIp != 0) break;
+    Serial.println("Waiting for DNS...");
+    drawProgress(30, "Resolving server...");
+    delay(1000);
+  }
+  Serial.printf("api.openweathermap.org -> %s\n", owmIp.toString().c_str());
+
   drawProgress(50, "Updating conditions...");
-  WundergroundConditions *conditionsClient = new WundergroundConditions(IS_METRIC);
-  conditionsClient->updateConditions(&conditions, WUNDERGRROUND_API_KEY, WUNDERGRROUND_LANGUAGE, WUNDERGROUND_COUNTRY, WUNDERGROUND_CITY);
-  delete conditionsClient;
-  conditionsClient = nullptr;
+  OpenWeatherMapCurrent *currentWeatherClient = new OpenWeatherMapCurrent();
+  currentWeatherClient->setMetric(IS_METRIC);
+  currentWeatherClient->setLanguage(OPEN_WEATHER_MAP_LANGUAGE);
+  currentWeatherClient->updateCurrentById(&currentWeather, OPEN_WEATHER_MAP_API_KEY, OPEN_WEATHER_MAP_LOCATION_ID);
+  delete currentWeatherClient;
+  currentWeatherClient = nullptr;
 
   drawProgress(70, "Updating forecasts...");
-  WundergroundForecast *forecastClient = new WundergroundForecast(IS_METRIC);
-  forecastClient->updateForecast(forecasts, MAX_FORECASTS, WUNDERGRROUND_API_KEY, WUNDERGRROUND_LANGUAGE, WUNDERGROUND_COUNTRY, WUNDERGROUND_CITY);
+  OpenWeatherMapForecast *forecastClient = new OpenWeatherMapForecast();
+  forecastClient->setMetric(IS_METRIC);
+  forecastClient->setLanguage(OPEN_WEATHER_MAP_LANGUAGE);
+  uint8_t allowedHours[] = {12, 0};
+  forecastClient->setAllowedHours(allowedHours, sizeof(allowedHours));
+  forecastClient->updateForecastsById(forecasts, OPEN_WEATHER_MAP_API_KEY, OPEN_WEATHER_MAP_LOCATION_ID, MAX_FORECASTS);
   delete forecastClient;
   forecastClient = nullptr;
 
   drawProgress(80, "Updating astronomy...");
-  WundergroundAstronomy *astronomyClient = new WundergroundAstronomy(IS_STYLE_12HR);
-  astronomyClient->updateAstronomy(&astronomy, WUNDERGRROUND_API_KEY, WUNDERGRROUND_LANGUAGE, WUNDERGROUND_COUNTRY, WUNDERGROUND_CITY);
-  delete astronomyClient;
-  astronomyClient = nullptr;
-  moonAgeImage = String((char) (65 + 26 * (((15 + astronomy.moonAge.toInt()) % 30) / 30.0)));
+  // SunMoonCalc needs the current epoch + lat/lon (degrees). Moon phase will be
+  // wrong until the clock is synced; sunrise/sunset come from OWM as absolute UTC.
+  time_t now = time(nullptr);
+  SunMoonCalc *smCalc = new SunMoonCalc(now, currentWeather.lat, currentWeather.lon);
+  moonData = smCalc->calculateSunAndMoonData().moon;
+  delete smCalc;
+  smCalc = nullptr;
 
 //  WiFi.mode(WIFI_OFF);
   delay(1000);
@@ -705,54 +735,38 @@ void drawTime(bool saver) {
 // draws current weather information
 void drawCurrentWeather() {
   gfx.setTransparentColor(MINI_BLACK);
-  gfx.drawPalettedBitmapFromPgm(0, 55, getMeteoconIconFromProgmem(conditions.weatherIcon));
-  // Weather Text
+  gfx.drawPalettedBitmapFromPgm(0, 55, getMeteoconIconFromProgmem(owmToCxandyIcon(currentWeather.icon)));
 
   gfx.setFont(ArialRoundedMTBold_14);
   gfx.setColor(MINI_BLUE);
   gfx.setTextAlignment(TEXT_ALIGN_RIGHT);
-//  gfx.drawString(220, 65, DISPLAYED_CITY_NAME);
-  gfx.drawString(220, 65, WUNDERGROUND_CITY);
+  gfx.drawString(220, 65, DISPLAYED_CITY_NAME);
 
   gfx.setFont(ArialRoundedMTBold_36);
   gfx.setColor(MINI_WHITE);
   gfx.setTextAlignment(TEXT_ALIGN_RIGHT);
-  String degreeSign = "°F";
-  if (IS_METRIC) {
-    degreeSign = "°C";
-  }
+  String degreeSign = IS_METRIC ? "°C" : "°F";
 
-  String temp = conditions.currentTemp + degreeSign;
-  #ifdef LM75
-    if (canBtnPress) temperature = lm75(); 
-    temp = temperature + degreeSign;
-  #endif
-  
-  #ifdef HAVE_TOUCHPAD
-      #ifdef NTC
-        temp = (int)temperature + degreeSign;
-      #endif
-  #endif
-      
-  gfx.drawString(220, 78, temp);
+  // OpenWeatherMap current temperature (outdoor). The board's onboard NTC
+  // thermistor reading is still available in `temperature` for the detail screen.
+  gfx.drawString(220, 78, String(currentWeather.temp, 1) + degreeSign);
 
   gfx.setFont(ArialRoundedMTBold_14);
   gfx.setColor(MINI_YELLOW);
   gfx.setTextAlignment(TEXT_ALIGN_RIGHT);
-  gfx.drawString(220, 118, conditions.weatherText);
-
+  gfx.drawString(220, 118, currentWeather.description);
 }
 
 void drawForecast1(MiniGrafx *display, CarouselState* state, int16_t x, int16_t y) {
   drawForecastDetail(x + 10, y + 165, 0);
-  drawForecastDetail(x + 95, y + 165, 2);
-  drawForecastDetail(x + 180, y + 165, 4);
+  drawForecastDetail(x + 95, y + 165, 1);
+  drawForecastDetail(x + 180, y + 165, 2);
 }
 
 void drawForecast2(MiniGrafx *display, CarouselState* state, int16_t x, int16_t y) {
-  drawForecastDetail(x + 10, y + 165, 6);
-  drawForecastDetail(x + 95, y + 165, 8);
-  drawForecastDetail(x + 180, y + 165, 10);
+  drawForecastDetail(x + 10, y + 165, 3);
+  drawForecastDetail(x + 95, y + 165, 4);
+  drawForecastDetail(x + 180, y + 165, 5);
 }
 
 
@@ -761,16 +775,16 @@ void drawForecastDetail(uint16_t x, uint16_t y, uint8_t dayIndex) {
   gfx.setColor(MINI_YELLOW);
   gfx.setFont(ArialRoundedMTBold_14);
   gfx.setTextAlignment(TEXT_ALIGN_CENTER);
-  String day = forecasts[dayIndex].forecastTitle.substring(0, 3);
-  day.toUpperCase();
-  gfx.drawString(x + 25, y - 15, day);
+  time_t time = forecasts[dayIndex].observationTime;
+  struct tm * timeinfo = localtime(&time);
+  gfx.drawString(x + 25, y - 15, WDAY_NAMES[timeinfo->tm_wday] + " " + String(timeinfo->tm_hour) + ":00");
 
   gfx.setColor(MINI_WHITE);
-  gfx.drawString(x + 25, y, forecasts[dayIndex].forecastLowTemp + "|" + forecasts[dayIndex].forecastHighTemp);
+  gfx.drawString(x + 25, y, String(forecasts[dayIndex].temp, 0) + (IS_METRIC ? "°C" : "°F"));
 
-  gfx.drawPalettedBitmapFromPgm(x, y + 15, getMiniMeteoconIconFromProgmem(forecasts[dayIndex].forecastIcon));
+  gfx.drawPalettedBitmapFromPgm(x, y + 15, getMiniMeteoconIconFromProgmem(owmToCxandyIcon(forecasts[dayIndex].icon)));
   gfx.setColor(MINI_BLUE);
-  gfx.drawString(x + 25, y + 60, forecasts[dayIndex].PoP + "%");
+  gfx.drawString(x + 25, y + 60, String(forecasts[dayIndex].rain, 1) + (IS_METRIC ? "mm" : "in"));
 }
 
 // draw moonphase and sunrise/set and moonrise/set
@@ -779,26 +793,29 @@ void drawAstronomy() {
   gfx.setFont(MoonPhases_Regular_36);
   gfx.setColor(MINI_WHITE);
   gfx.setTextAlignment(TEXT_ALIGN_CENTER);
-  gfx.drawString(120, 275, moonAgeImage);
+  gfx.drawString(120, 275, String(determineMoonIcon()));
 
   gfx.setColor(MINI_WHITE);
   gfx.setFont(ArialRoundedMTBold_14);
   gfx.setTextAlignment(TEXT_ALIGN_CENTER);
   gfx.setColor(MINI_YELLOW);
-  gfx.drawString(120, 250, astronomy.moonPhase);
+  gfx.drawString(120, 250, moonData.phase.name);
+
   gfx.setTextAlignment(TEXT_ALIGN_LEFT);
   gfx.setColor(MINI_YELLOW);
   gfx.drawString(5, 250, "Sun");
   gfx.setColor(MINI_WHITE);
-  gfx.drawString(5, 276, astronomy.sunriseTime);
-  gfx.drawString(5, 291, astronomy.sunsetTime);
+  time_t t = currentWeather.sunrise;
+  gfx.drawString(5, 276, "Rise: " + getTime(&t));
+  t = currentWeather.sunset;
+  gfx.drawString(5, 291, "Set:  " + getTime(&t));
 
   gfx.setTextAlignment(TEXT_ALIGN_RIGHT);
   gfx.setColor(MINI_YELLOW);
   gfx.drawString(235, 250, "Moon");
   gfx.setColor(MINI_WHITE);
-  gfx.drawString(235, 276, astronomy.moonriseTime);
-  gfx.drawString(235, 291, astronomy.moonsetTime);
+  gfx.drawString(235, 276, "Illum: " + String(moonData.illumination * 100, 0) + "%");
+  gfx.drawString(235, 291, "Age: " + String(moonData.age, 1) + "d");
 
 }
 
@@ -811,27 +828,27 @@ void drawCurrentWeatherDetail() {
   //gfx.setTransparentColor(MINI_BLACK);
   //gfx.drawPalettedBitmapFromPgm(0, 20, getMeteoconIconFromProgmem(conditions.weatherIcon));
 
-  String degreeSign = "°F";
-  if (IS_METRIC) {
-    degreeSign = "°C";
-  }
-  // String weatherIcon;
-  // String weatherText;
-  drawLabelValue(0, "Temperature:", conditions.currentTemp + degreeSign);
-  drawLabelValue(1, "Feels Like:", conditions.feelslike + degreeSign);
-  drawLabelValue(2, "Dew Point:", conditions.dewPoint + degreeSign);
-  drawLabelValue(3, "Wind Speed:", conditions.windSpeed);
-  drawLabelValue(4, "Wind Dir:", conditions.windDir);
-  drawLabelValue(5, "Humidity:", conditions.humidity);
-  drawLabelValue(6, "Pressure:", conditions.pressure);
-  drawLabelValue(7, "Precipitation:", conditions.precipitationToday);
-  drawLabelValue(8, "UV:", conditions.UV);
+  String degreeSign = IS_METRIC ? "°C" : "°F";
+  const char* dirs[] = {"N", "NE", "E", "SE", "S", "SW", "W", "NW"};
+  String windDir = dirs[(int)((currentWeather.windDeg + 22.5) / 45.0) % 8];
+  String windUnit = IS_METRIC ? "m/s" : "mph";
+
+  drawLabelValue(0, "Temperature:", String(currentWeather.temp, 1) + degreeSign);
+  drawLabelValue(1, "Feels Like:", String(currentWeather.feelsLike, 1) + degreeSign);
+  drawLabelValue(2, "Humidity:", String(currentWeather.humidity) + "%");
+  drawLabelValue(3, "Pressure:", String(currentWeather.pressure) + "hPa");
+  drawLabelValue(4, "Wind Speed:", String(currentWeather.windSpeed, 1) + windUnit);
+  drawLabelValue(5, "Wind Dir:", windDir);
+  drawLabelValue(6, "Clouds:", String(currentWeather.clouds) + "%");
+#ifdef NTC
+  drawLabelValue(7, "Indoor Temp:", String((int)temperature) + degreeSign);
+#endif
 
   gfx.setTextAlignment(TEXT_ALIGN_LEFT);
   gfx.setColor(MINI_YELLOW);
   gfx.drawString(15, 185, "Description: ");
   gfx.setColor(MINI_WHITE);
-  gfx.drawStringMaxWidth(15, 200, 240 - 2 * 15, forecasts[0].forecastText);
+  gfx.drawStringMaxWidth(15, 200, 240 - 2 * 15, currentWeather.description);
 }
 
 void drawLabelValue(uint8_t line, String label, String value) {
@@ -903,30 +920,22 @@ void drawForecastTable(uint8_t start) {
     if (y > 320) {
       break;
     }
-    gfx.drawPalettedBitmapFromPgm(0, y, getMiniMeteoconIconFromProgmem(forecasts[i].forecastIcon));
+    gfx.drawPalettedBitmapFromPgm(0, y, getMiniMeteoconIconFromProgmem(owmToCxandyIcon(forecasts[i].icon)));
 
     gfx.setColor(MINI_YELLOW);
     gfx.setFont(ArialRoundedMTBold_14);
 
-    gfx.drawString(50, y, forecasts[i].forecastTitle);
+    time_t time = forecasts[i].observationTime;
+    struct tm * timeinfo = localtime(&time);
+    gfx.drawString(50, y, WDAY_NAMES[timeinfo->tm_wday] + " " + String(timeinfo->tm_hour) + ":00");
     gfx.setColor(MINI_WHITE);
-    gfx.drawString(50, y + 15, getShortText(forecasts[i].forecastIcon));
+    gfx.drawString(50, y + 15, forecasts[i].description);
     gfx.setColor(MINI_WHITE);
     gfx.setTextAlignment(TEXT_ALIGN_RIGHT);
 
-    String temp = "";
-    if (i % 2 == 0) {
-      temp = forecasts[i].forecastHighTemp;
-    } else {
-      temp = forecasts[i - 1].forecastLowTemp;
-    }
-    gfx.drawString(235, y, temp + degreeSign);
-    /*gfx.setColor(MINI_WHITE);
-    gfx.drawString(x + 25, y, forecasts[dayIndex].forecastLowTemp + "|" + forecasts[dayIndex].forecastHighTemp);
-
-    gfx.drawPalettedBitmapFromPgm(x, y + 15, getMiniMeteoconIconFromProgmem(forecasts[dayIndex].forecastIcon));*/
+    gfx.drawString(235, y, String(forecasts[i].temp, 0) + degreeSign);
     gfx.setColor(MINI_BLUE);
-    gfx.drawString(235, y + 15, forecasts[i].PoP + "%");
+    gfx.drawString(235, y + 15, String(forecasts[i].rain, 1) + (IS_METRIC ? "mm" : "in"));
 
   }
 }
@@ -976,6 +985,46 @@ void calibrationCallback(int16_t x, int16_t y) {
 }
 
 // Helper function, should be part of the weather station library and should disappear soon
+// Convert an OpenWeatherMap icon code (e.g. "09d") to cxandy's Wunderground-style
+// icon name so the existing bitmaps in weathericons.h can be reused.
+String owmToCxandyIcon(String owmIcon) {
+  bool day = owmIcon.endsWith("d");
+  String c = owmIcon.substring(0, 2);
+  if (c == "01") return day ? "sunny" : "clear";
+  if (c == "02") return day ? "partlysunny" : "partlycloudy";
+  if (c == "03") return "partlycloudy";
+  if (c == "04") return "cloudy";
+  if (c == "09") return "rain";
+  if (c == "10") return "rain";
+  if (c == "11") return "tstorms";
+  if (c == "13") return "snow";
+  if (c == "50") return "fog";
+  return "unknown";
+}
+
+// Format a UTC epoch as local HH:MM (applies the configTime offset).
+String getTime(time_t *timestamp) {
+  struct tm *timeInfo = localtime(timestamp);
+  char buf[9];
+  if (IS_STYLE_12HR) {
+    int hour = (timeInfo->tm_hour + 11) % 12 + 1;
+    sprintf(buf, "%2d:%02d%s", hour, timeInfo->tm_min, timeInfo->tm_hour >= 12 ? "p" : "a");
+  } else {
+    sprintf(buf, "%02d:%02d", timeInfo->tm_hour, timeInfo->tm_min);
+  }
+  return String(buf);
+}
+
+// Pick a Moon Phases font glyph from the current illumination/phase (northern hemisphere).
+char determineMoonIcon() {
+  int index = (int) round(moonData.illumination * 14);  // 0..14
+  if (index < 0) index = 0;
+  if (index > 14) index = 14;
+  const char north_waning[] = {64,77,76,75,74,73,72,71,70,69,68,67,66,65,48};
+  const char north_waxing[] = {64,78,79,80,81,82,83,84,85,86,87,88,89,90,48};
+  return (moonData.phase.index > 4) ? north_waning[index] : north_waxing[index];
+}
+
 const char* getMeteoconIconFromProgmem(String iconText) {
 
   if (iconText == "chanceflurries") return chanceflurries;
