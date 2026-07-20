@@ -34,7 +34,7 @@ String WIFI_PASS = "yourpassw0rd";
 
 int UPDATE_INTERVAL_SECS = 10 * 60; // Update every 10 minutes
 int SAVER_INTERVAL_SECS = 0;    // Going to screen saver after idle times, set 0 for dont screen saver.
-int SLEEP_INTERVAL_SECS = 0;    // Going to Sleep after idle times, set 0 for dont sleep.
+int SLEEP_INTERVAL_SECS = 60;   // Deep sleep after N seconds idle (wake on touch via XPT2046 PENIRQ->RST). 0 = never sleep.
 
 #define SQUIX         10
 #define AZSMZ_1_1     11

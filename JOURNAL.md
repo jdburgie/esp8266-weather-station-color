@@ -8,7 +8,13 @@ running on AZSMZ_1_6 hardware.
 - [ ] Verify the config **AP portal** end-to-end (auto-opens on WiFi-fail; AP "<chipid>-WeatherStation" → http://192.168.4.1 → save writes /weatherstation.conf).
 - [ ] Verify **touch calibration** on FLASH-button long-press during normal operation.
 - [ ] Remove the temporary `NET ...` / `Waiting for DNS...` diagnostic Serial prints in updateData() (keep the DNS warm-up loop).
-- [ ] 3D printed enclosure (in progress, separate track).
+- [ ] 3D printed enclosure (in progress, separate track). Note: wake is a tap anywhere on the touchscreen, so the screen must stay physically accessible.
+
+## 2026-07-18 — Deep sleep + wake-on-touch enabled
+- Set `SLEEP_INTERVAL_SECS = 60` (deep sleep after 60 s of no touch/button). Wake-on-touch verified working on the AZSMZ_1_6 board → confirms the XPT2046 **PENIRQ is wired to RST**.
+- Mechanism: before `ESP.deepSleep(0, WAKE_RF_DEFAULT)` the firmware sets the touch controller to low-power IRQ mode (`XPT2046_EnableIrq(CFG_LIRQ)`); a tap pulses RST and the ESP cold-boots (reconnects WiFi + refetches weather, ~few seconds — not a resume).
+- Idle timer resets on any touch (`timerTouch`) or button press (`timerPress`); sleep only triggers when BOTH have been idle for the full interval, so interacting keeps it awake.
+- Power: ~20 µA asleep vs ~70 mA active.
 
 ## 2026-07-18 — Working: OpenWeatherMap port complete
 - Full station functional on the AZSMZ_1_6 board: display, WiFi, date/time, current weather + forecast.
