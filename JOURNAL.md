@@ -10,6 +10,9 @@ running on AZSMZ_1_6 hardware.
 - [ ] Remove the temporary `NET ...` / `Waiting for DNS...` diagnostic Serial prints in updateData() (keep the DNS warm-up loop).
 - [ ] 3D printed enclosure (in progress, separate track). Note: wake is a tap anywhere on the touchscreen, so the screen must stay physically accessible.
 
+## 2026-07-18 — Power-aware sleep (stay awake on USB)
+- Deep sleep now gated on battery voltage: `onBattery = power > 0.1 && power < POWER_SLEEP_THRESHOLD (4.10 V)`. On USB the rail sits at a steady ~4.16 V (measured), so it stays above 4.10 and never sleeps; on battery it sags/drains below 4.10 and resumes the 60 s idle→sleep behavior. `power` is the XPT2046 VBAT reading (same value used by drawBattery). Verified: stays awake on USB. If a weaker charger ever dips below 4.10, lower the threshold.
+
 ## 2026-07-18 — Deep sleep + wake-on-touch enabled
 - Set `SLEEP_INTERVAL_SECS = 60` (deep sleep after 60 s of no touch/button). Wake-on-touch verified working on the AZSMZ_1_6 board → confirms the XPT2046 **PENIRQ is wired to RST**.
 - Mechanism: before `ESP.deepSleep(0, WAKE_RF_DEFAULT)` the firmware sets the touch controller to low-power IRQ mode (`XPT2046_EnableIrq(CFG_LIRQ)`); a tap pulses RST and the ESP cold-boots (reconnects WiFi + refetches weather, ~few seconds — not a resume).

@@ -468,6 +468,9 @@ void startConfig() {
 float power;
 #define VREF 2.5
 #define MPW 10
+// Below this (volts) => running on battery => allow deep sleep.
+// At/above => treated as on USB/charged => stay awake. (Tuned from measured readings.)
+#define POWER_SLEEP_THRESHOLD 4.10
 
 void getPower() {
       static int i;
@@ -572,7 +575,8 @@ void loop() {
   gfx.commit();
 
 
-  if (SLEEP_INTERVAL_SECS && (millis() - timerPress >= SLEEP_INTERVAL_SECS * 1000) && (millis() - timerTouch >= SLEEP_INTERVAL_SECS * 1000)){ // after 2 minutes go to sleep
+  bool onBattery = (power > 0.1 && power < POWER_SLEEP_THRESHOLD);   // high/steady voltage => on USB => stay awake
+  if (SLEEP_INTERVAL_SECS && onBattery && (millis() - timerPress >= SLEEP_INTERVAL_SECS * 1000) && (millis() - timerTouch >= SLEEP_INTERVAL_SECS * 1000)){ // sleep only on battery after idle
       drawProgress(25,"Going to Sleep!");
       delay(1000);
       drawProgress(50,"Going to Sleep!");
